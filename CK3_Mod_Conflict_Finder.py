@@ -212,9 +212,11 @@ for file_name, conflicts in final_conflicts.items():
     output_lines.append(f"\nFile: {file_name}")
     # Sort entries by load order index (order)
     for order, mod_name, location in sorted(conflicts, key=lambda val: val[0]):
-        output_lines.append(f"  - [{order}] {mod_name} ({location})")
+        display_order = 0 if mod_name == "Game" else order
+        output_lines.append(f"  - [{display_order}] {mod_name} ({location})")
 
 # Save to text file
 summary_path = f"{this_file_path}/mod_conflict_summary.txt"
 with open(summary_path, "w", encoding="utf-8") as f:
+
     f.write("\n".join(output_lines))

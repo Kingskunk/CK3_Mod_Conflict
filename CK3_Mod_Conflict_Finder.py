@@ -1,21 +1,18 @@
-
 import os	# OS file operations
 import json		# for Mod load order
 import ctypes # for Documents path
 import ctypes.wintypes # for Documents path
 
+def norm(p: str) -> str:
+    return p.replace("\\", "/").lower()
+
 write_2_file:bool = True
 file_extensions:tuple[str, ...] = (".txt", ".gui", ".asset", ".py")
-
-print("\
-Launch the game launcher once before running this script!\n\
-Remove the mods from load order if the files have been deleted!\n\
-Will cause issues if mod with exact same name are present!\n\
-")
 
 ## --------------------------------------
 ## Setup Paths
 ## --------------------------------------
+
 this_file_path : str = os.path.dirname(os.path.abspath(__file__)).replace('\\','/')
 print("This file path =\n" + this_file_path)
 
@@ -37,16 +34,17 @@ documents_ck3_path :str = buffer.value.replace('\\','/') + '/Paradox Interactive
 print(documents_ck3_path)
 
 def open_file(path:str) -> any:
-  with open(path, "r") as f:
-    if(path.endswith(".json")):
-      var = json.load(f)  # .json file as dictionary
-    else:
-      var = f.readlines() # Other file as list of lines
-  f.close()
-  return var
+  # simplified: with-context already closes files; preserve json handling
+  if path.endswith(".json"):
+    with open(path, "r", encoding="utf-8") as f:
+      return json.load(f)
+  with open(path, "r", encoding="utf-8") as f:
+    return f.readlines()
 
 ## --------------------------------------
 ## Add any additional exclusions from resolved_conflicts file
+## --------------------------------------
+
 try:
   filename_exclusions:list[str] = open_file(f'{this_file_path+'/resolved_conflicts.txt'}')
 except FileNotFoundError:
@@ -61,39 +59,25 @@ print("Exclusions:", filename_exclusions)
 load_order : dict[str, str] = open_file(f'{documents_ck3_path+'/dlc_load.json'}')["enabled_mods"]
 
 mod_name_dict:dict[str, str] = {}  #mod_name_dict.keys() = .mod file should be unique, mod_name_dict.values() = Name
-
 for local_mod_file in load_order:
-  mod_descriptor = open_file((f'{documents_ck3_path+'/'+local_mod_file}'))
+    mod_descriptor = open_file(f'{documents_ck3_path+"/"+local_mod_file}')
 
-  for line in mod_descriptor:
-    l = line.strip("\"\n")
-    if line.startswith("name="):
-      mod_name_dict[l[6:]] = (local_mod_file[:-4])
-    if line.startswith("path="):
-      mod_name_dict[l[6:]] = (local_mod_file[:-4])
+    mod_human_name = None
+    mod_path = None
 
-#print(list(mod_name_dict.keys())[1])
-#print(list(mod_name_dict.values())[1])
+    for line in mod_descriptor:
+        l = line.strip("\"\n")
+        if line.startswith("name="):
+            mod_human_name = l[6:]
+        if line.startswith("path="):
+            mod_path = norm(l[6:])
 
-def flip_this_dict(dict_2_flip : dict) -> dict:
-  flipped_dict = {}
-  for key, value in dict_2_flip.items():
-    if value in flipped_dict:
-      flipped_dict[value].append(key) #Add to previous entry
-    else:
-      flipped_dict[value] = [key] #Create the entry if it doesn't exist
-  return flipped_dict
+    if mod_human_name and mod_path:
+        mod_name_dict[mod_path] = mod_human_name
 
-mod_name_dict_flipped = flip_this_dict(mod_name_dict)
-mod_name_dict.clear()
-mod_name_dict[game_file_path] = 'Game'
-for i in mod_name_dict_flipped.items():
-  mod_name_dict[i[1][1]] = i[1][0]
-mod_name_dict_flipped.clear()
-
-if write_2_file:
-    with open(f'{this_file_path+"/mod_name_dict.txt"}', 'w', encoding="utf-8") as f:
-        f.write(json.dumps(mod_name_dict, indent=0, ensure_ascii=False))
+# Add the base game path
+mod_name_dict[norm(game_file_path)] = "Game"
+      
 
 ## --------------------------------------
 ## Search all files from Setup Paths with the following extensions
@@ -103,28 +87,28 @@ def make_files_list(path : str) -> dict[str,str]:
   file_list:dict[str,str] = {}
   for dirpath, _, files in os.walk(path):
     for file in files:
-      if file.lower().endswith(file_extensions) : # only specified extensions
-        if any(exclusions in file.lower() for exclusions in filename_exclusions) == False: # exclude specified filenames
-          file_list[f'{(dirpath+'/'+file).replace('\\','/')}'] = file
-  return(file_list)
+      if file.lower().endswith(file_extensions):  # only specified extensions
+        # simpler exclusion check and normalize stored full path so startswith matches mod paths
+        if not any(exclusion.lower() in file.lower() for exclusion in filename_exclusions):
+          full = norm(os.path.join(dirpath, file))
+          file_list[full] = file
+  return file_list
 
 ## --------------------------------------
 ## add all files to dict, flip dict to extract duplicates
 ## --------------------------------------
-all_files:dict[str, str] = {}
-all_files.update(make_files_list(f'{documents_ck3_path+'/mod'}'))
-all_files.update(make_files_list(game_file_path))
-all_files.update(make_files_list(steam_dir_path))
 
-flipped_files = flip_this_dict(all_files)
-all_files.clear()
-
-## Remove dupes
 mods_conflicts:dict = {}
-for key, value in flipped_files.items():
-  if len(value)>1:
-    mods_conflicts[key] = value
-flipped_files.clear()
+for path_list in [
+    make_files_list(norm(f'{documents_ck3_path}/mod')),
+    make_files_list(norm(game_file_path)),
+    make_files_list(norm(steam_dir_path))
+]:
+    for full_path, filename in path_list.items():
+        mods_conflicts.setdefault(filename, []).append(full_path)
+
+# Keep only duplicates
+mods_conflicts = {k: v for k, v in mods_conflicts.items() if len(v) > 1}
 
 if write_2_file:
     with open(f'{this_file_path+"/mods_conflicts.txt"}', 'w', encoding="utf-8") as f:
@@ -139,7 +123,8 @@ for file_name,locations in mods_conflicts.items():
   for location in locations:
     for mod_location,mod_name in mod_name_dict.items():
       if location.startswith(mod_location):
-        order = list(mod_name_dict.keys()).index(mod_location)
+        order = list(mod_name_dict.keys()).index(mod_location) + 1
+
         
         if file_name in named_conflicts:
           named_conflicts[file_name].append((order,mod_name,location)) #Add to previous entry
@@ -150,14 +135,11 @@ for file_name,_ in named_conflicts.items():
   named_conflicts[file_name] = sorted(named_conflicts[file_name], key = lambda val: (val[0],val[2]))
 
 
-## Extract only real conflicts (more than 1 mod involved)
-final_conflicts:dict = {}
+final_conflicts = {}
 for key, value in named_conflicts.items():
-  if len(value)>1 : # and key not in resolved_conflicts:
-    final_conflicts[key] = value
-named_conflicts.clear()
-
-
+    distinct_mods = set(m for _, m, _ in value)
+    if len(distinct_mods) >= 2:  # Game + Mod counts as 2
+        final_conflicts[key] = value
 
 # --------------------------------------
 # Print and save combined conflicts summary (mods vs mods + mods vs game)
@@ -232,13 +214,7 @@ for file_name, conflicts in final_conflicts.items():
     for order, mod_name, location in sorted(conflicts, key=lambda val: val[0]):
         output_lines.append(f"  - [{order}] {mod_name} ({location})")
 
-
-# Print to console
-print("\n".join(output_lines))
-
 # Save to text file
 summary_path = f"{this_file_path}/mod_conflict_summary.txt"
 with open(summary_path, "w", encoding="utf-8") as f:
     f.write("\n".join(output_lines))
-
-print(f"\nSummary saved to {summary_path}")

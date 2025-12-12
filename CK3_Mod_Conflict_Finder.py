@@ -19,17 +19,14 @@ Will cause issues if mod with exact same name are present!\n\
 this_file_path : str = os.path.dirname(os.path.abspath(__file__)).replace('\\','/')
 print("This file path =\n" + this_file_path)
 
-game_file_path : str = input("Game Path = ")
-if game_file_path == "":
-  game_file_path = "G:/SteamLibrary/steamapps/common/Crusader Kings III/game"
-game_file_path = game_file_path.replace('\\','/')
-print(game_file_path)
+try:
+    with open(os.path.join(this_file_path, "config.json"), "r") as cfg:
+        config = json.load(cfg)
+        game_file_path = config["game_path"].replace('\\','/')
+        steam_dir_path = config["steam_mod_path"].replace('\\','/')
+except FileNotFoundError:
+    raise RuntimeError("Missing config.json. Please create one with 'game_path' and 'steam_mod_path'.")
 
-steam_dir_path : str = input("Steam Mod Path = ")
-if steam_dir_path == "":
-  steam_dir_path = "G:/SteamLibrary/steamapps/workshop/content/1158310"
-  
-steam_dir_path = steam_dir_path.replace('\\','/')
 print(steam_dir_path)
 
 # Get Documents Path from Windows
@@ -95,8 +92,8 @@ for i in mod_name_dict_flipped.items():
 mod_name_dict_flipped.clear()
 
 if write_2_file:
-  with open(f'{this_file_path+'/mod_name_dict.txt'}', 'w') as f:
-    f.write((json.dumps(mod_name_dict,indent=0,ensure_ascii=False)))
+    with open(f'{this_file_path+"/mod_name_dict.txt"}', 'w', encoding="utf-8") as f:
+        f.write(json.dumps(mod_name_dict, indent=0, ensure_ascii=False))
 
 ## --------------------------------------
 ## Search all files from Setup Paths with the following extensions
@@ -130,8 +127,8 @@ for key, value in flipped_files.items():
 flipped_files.clear()
 
 if write_2_file:
-  with open(f'{this_file_path+'/mods_conflicts.txt'}', 'w') as f:
-    f.write((json.dumps(mods_conflicts,indent=0,ensure_ascii=False)))
+    with open(f'{this_file_path+"/mods_conflicts.txt"}', 'w', encoding="utf-8") as f:
+        f.write(json.dumps(mods_conflicts, indent=0, ensure_ascii=False))
 
 ## --------------------------------------
 ## Add the Load order of the file to dict
@@ -161,7 +158,87 @@ for key, value in named_conflicts.items():
 named_conflicts.clear()
 
 
-#print(named_conflicts)
 
-with open(f'{this_file_path+'/final_conflicts.txt'}', 'w') as f:
-  f.write((json.dumps(final_conflicts,indent=2,ensure_ascii=False)))
+# --------------------------------------
+# Print and save combined conflicts summary (mods vs mods + mods vs game)
+# --------------------------------------
+
+conflict_counts = {}          # track how many conflicts each mod has
+conflict_partners = {}        # track which mods each one conflicts with
+game_conflicts = {}           # track how many times each mod conflicts with Game
+mod_order_index = {}         # track load order index for each mod
+output_lines = []
+
+# Build counts, partners, and game conflicts
+for file_name, conflicts in final_conflicts.items():
+    distinct_mods = set(mod_name for _, mod_name, _ in conflicts)
+
+    # Skip if only one mod is involved (self-conflict)
+    if len(distinct_mods) <= 1:
+        continue
+
+    for order, mod_name, location in conflicts:
+        if mod_name == "Game":
+            continue
+
+        # Increment total conflict count once per file (not per entry)
+        conflict_counts[mod_name] = conflict_counts.get(mod_name, 0) + 1
+
+        # Track the lowest load order index for this mod
+        if mod_name not in mod_order_index or order < mod_order_index[mod_name]:
+            mod_order_index[mod_name] = order
+
+        # If conflict includes Game, increment once per file
+        if "Game" in distinct_mods:
+            game_conflicts[mod_name] = game_conflicts.get(mod_name, 0) + 1
+
+        # Track mod-to-mod partners (ignore Game)
+        partners = [m for m in distinct_mods if m != mod_name and m != "Game"]
+        if partners:
+            if mod_name in conflict_partners:
+                conflict_partners[mod_name].update(partners)
+            else:
+                conflict_partners[mod_name] = set(partners)
+
+# Add combined summary section at the top
+output_lines.append("=== Combined Conflict Summary ===")
+for mod_name in sorted(conflict_counts.keys(), key=lambda m: mod_order_index.get(m, 9999)):
+    partners = conflict_partners.get(mod_name, set())
+    partners_list = ", ".join(sorted(partners)) if partners else "None"
+    game_count = game_conflicts.get(mod_name, 0)
+
+    # Skip mods that have no partners AND no game conflicts
+    if len(partners) == 0 and game_count == 0:
+        continue
+
+    order_display = mod_order_index.get(mod_name, "?")
+    output_lines.append(
+        f"[{order_display}] {mod_name}: {conflict_counts[mod_name]} total conflicts "
+        f"(Mod-to-Mod: {len(partners)} partners → {partners_list}; "
+        f"With Game: {game_count})"
+    )
+
+# Then add detailed conflicts
+output_lines.append("\n=== Detailed Conflicts ===\n")
+for file_name, conflicts in final_conflicts.items():
+    distinct_mods = set(mod_name for _, mod_name, _ in conflicts)
+
+    # Skip if only one mod is involved (self-conflict)
+    if len(distinct_mods) <= 1:
+        continue
+
+    output_lines.append(f"\nFile: {file_name}")
+    # Sort entries by load order index (order)
+    for order, mod_name, location in sorted(conflicts, key=lambda val: val[0]):
+        output_lines.append(f"  - [{order}] {mod_name} ({location})")
+
+
+# Print to console
+print("\n".join(output_lines))
+
+# Save to text file
+summary_path = f"{this_file_path}/mod_conflict_summary.txt"
+with open(summary_path, "w", encoding="utf-8") as f:
+    f.write("\n".join(output_lines))
+
+print(f"\nSummary saved to {summary_path}")
